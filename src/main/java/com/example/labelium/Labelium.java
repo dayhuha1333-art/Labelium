@@ -7,17 +7,27 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.GuiTextField;
+import net.minecraft.client.gui.ScaledResolution;
+import net.minecraft.client.renderer.BufferBuilder;
+import net.minecraft.client.renderer.GlStateManager;
+import net.minecraft.client.renderer.Tessellator;
+import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
 import net.minecraft.client.settings.KeyBinding;
+import net.minecraft.util.math.Vec3d;
+import net.minecraftforge.client.event.RenderGameOverlayEvent;
+import net.minecraftforge.client.event.RenderWorldLastEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.client.registry.ClientRegistry;
 import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.InputEvent;
 import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 import org.lwjgl.input.Keyboard;
+import org.lwjgl.opengl.GL11;
+import org.lwjgl.util.glu.GLU;
+import org.lwjgl.util.vector.Vector4f;
 
 import java.io.File;
 import java.io.FileReader;
@@ -26,6 +36,7 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
 import java.lang.reflect.Type;
+import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -38,7 +49,7 @@ public class Labelium {
     public static final String VERSION = "1.0.0";
 
     public static final KeyBinding OPEN_GUI = new KeyBinding(
-        "key.labelium.open", Keyboard.KEY_RSHIFT, "key.categories.labelium"
+        "key.labelium.open", Keyboard.KEY_RSHIFT, "Labelium"
     );
 
     @Mod.EventHandler
@@ -46,6 +57,7 @@ public class Labelium {
     public void preInit(FMLPreInitializationEvent event) {
         ClientRegistry.registerKeyBinding(OPEN_GUI);
         MinecraftForge.EVENT_BUS.register(new KeyHandler());
+        MinecraftForge.EVENT_BUS.register(new WaypointRenderer());
         LabelData.load();
     }
 
@@ -91,6 +103,13 @@ public class Labelium {
             save();
         }
 
+        public static void remove(int index) {
+            if (index >= 0 && index < LABELS.size()) {
+                LABELS.remove(index);
+                save();
+            }
+        }
+
         public static void save() {
             if (file == null) return;
             try (Writer w = new FileWriter(file)) {
@@ -113,6 +132,92 @@ public class Labelium {
             } catch (IOException e) {
                 e.printStackTrace();
             }
+        }
+    }
+
+    @SideOnly(Side.CLIENT)
+    public static class WaypointRenderer {
+
+        @SubscribeEvent
+        public void onRenderWorldLast(RenderWorldLastEvent event) {
+            Minecraft mc = Minecraft.getMinecraft();
+            if (mc.player == null || mc.world == null) return;
+
+            for (Label label : LabelData.getLabels()) {
+                if (!label.enabled) continue;
+
+                double dx = label.x + 0.5 - mc.player.posX;
+                double dy = label.y + 0.5 - mc.player.posY;
+                double dz = label.z + 0.5 - mc.player.posZ;
+                double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (dist > 256) continue;
+
+                drawLabel(mc, label.x + 0.5, label.y + 0.5, label.z + 0.5, label.name, event.getPartialTicks());
+            }
+        }
+
+        private void drawLabel(Minecraft mc, double x, double y, double z, String name, float partialTicks) {
+            Vec3d cam = mc.getRenderViewEntity().getPositionEyes(partialTicks);
+            double cx = x - cam.x;
+            double cy = y - cam.y;
+            double cz = z - cam.z;
+
+            double yaw = Math.toRadians(mc.getRenderViewEntity().rotationYaw);
+            double pitch = Math.toRadians(mc.getRenderViewEntity().rotationPitch);
+
+            double sinYaw = Math.sin(yaw);
+            double cosYaw = Math.cos(yaw);
+            double sinPitch = Math.sin(pitch);
+            double cosPitch = Math.cos(pitch);
+
+            double x1 = cx * cosYaw - cz * sinYaw;
+            double z1 = cx * sinYaw + cz * cosYaw;
+
+            double y1 = cy * cosPitch - z1 * sinPitch;
+            double z2 = cy * sinPitch + z1 * cosPitch;
+
+            if (z2 <= 0.1) return;
+
+            double fov = mc.gameSettings.fovSetting;
+            double scale = 1.0 / Math.tan(Math.toRadians(fov) / 2.0);
+            double aspect = (double) mc.displayWidth / mc.displayHeight;
+
+            double ndcX = (x1 * scale / aspect) / z2;
+            double ndcY = (y1 * scale) / z2;
+            if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) return;
+
+            int screenW = mc.displayWidth;
+            int screenH = mc.displayHeight;
+            int px = (int) ((ndcX + 1) / 2 * screenW);
+            int py = (int) ((1 - ndcY) / 2 * screenH);
+
+            ScaledResolution sr = new ScaledResolution(mc);
+            int sx = px * sr.getScaledWidth() / screenW;
+            int sy = py * sr.getScaledHeight() / screenH;
+
+            GlStateManager.pushMatrix();
+            GlStateManager.enableBlend();
+            GlStateManager.blendFunc(GlStateManager.SourceFactor.SRC_ALPHA, GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA);
+            GlStateManager.color(1f, 0f, 0f, 1f);
+
+            drawDot(sx, sy, 4);
+
+            GlStateManager.color(1f, 1f, 1f, 1f);
+            mc.fontRenderer.drawStringWithShadow(name, sx + 6, sy - 4, 0xFF0000);
+
+            GlStateManager.disableBlend();
+            GlStateManager.popMatrix();
+        }
+
+        private void drawDot(int x, int y, int size) {
+            Tessellator tess = Tessellator.getInstance();
+            BufferBuilder buf = tess.getBuffer();
+            buf.begin(GL11.GL_QUADS, DefaultVertexFormats.POSITION);
+            buf.pos(x - size, y + size, 0).endVertex();
+            buf.pos(x + size, y + size, 0).endVertex();
+            buf.pos(x + size, y - size, 0).endVertex();
+            buf.pos(x - size, y - size, 0).endVertex();
+            tess.draw();
         }
     }
 
@@ -144,11 +249,17 @@ public class Labelium {
             for (int i = 0; i < LabelData.getLabels().size(); i++) {
                 Label label = LabelData.getLabels().get(i);
                 String text = label.name + " [" + label.x + ", " + label.y + ", " + label.z + "]";
-                GuiButton b = new GuiButton(100 + i, cx - 100, listY + i * 22, 200, 20, text);
+                GuiButton b = new GuiButton(100 + i, cx - 110, listY + i * 22, 200, 20, text);
                 if (label.enabled) {
-                    b.packedFGColour = 0x00FF00;
+                    b.packedFGColour = 0xFF0000;
+                } else {
+                    b.packedFGColour = 0xFFFFFF;
                 }
                 this.buttonList.add(b);
+
+                GuiButton del = new GuiButton(200 + i, cx + 95, listY + i * 22, 20, 20, "X");
+                del.packedFGColour = 0xFF5555;
+                this.buttonList.add(del);
             }
         }
 
@@ -177,6 +288,10 @@ public class Labelium {
                     this.initGui();
                 } catch (NumberFormatException ignored) {
                 }
+            } else if (button.id >= 200) {
+                int idx = button.id - 200;
+                LabelData.remove(idx);
+                this.initGui();
             } else if (button.id >= 100) {
                 int idx = button.id - 100;
                 if (idx < LabelData.getLabels().size()) {
