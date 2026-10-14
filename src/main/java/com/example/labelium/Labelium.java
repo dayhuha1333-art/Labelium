@@ -101,7 +101,7 @@ public class Labelium {
         }
 
         public static void load() {
-            file = new File(Minecraft.getMinecraft().gameDir, "config/labelium.json");
+            file = new File(Minecraft.getMinecraft().mcDataDir, "config/labelium.json");
             if (!file.exists()) return;
             try (Reader r = new FileReader(file)) {
                 Type type = new TypeToken<List<Label>>() {}.getType();
