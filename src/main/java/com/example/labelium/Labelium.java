@@ -15,7 +15,6 @@ import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraft.util.math.Vec3d;
 import net.minecraftforge.client.event.RenderGameOverlayEvent;
-import net.minecraftforge.client.event.RenderWorldLastEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.fml.client.registry.ClientRegistry;
 import net.minecraftforge.fml.common.Mod;
@@ -26,8 +25,6 @@ import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.opengl.GL11;
-import org.lwjgl.util.glu.GLU;
-import org.lwjgl.util.vector.Vector4f;
 
 import java.io.File;
 import java.io.FileReader;
@@ -36,7 +33,6 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
 import java.lang.reflect.Type;
-import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -62,9 +58,12 @@ public class Labelium {
     }
 
     public static class KeyHandler {
+        private boolean wasPressed = false;
+
         @SubscribeEvent
         public void onKeyInput(InputEvent.KeyInputEvent event) {
-            if (OPEN_GUI.isPressed()) {
+            boolean pressed = OPEN_GUI.isKeyDown();
+            if (pressed && !wasPressed) {
                 Minecraft mc = Minecraft.getMinecraft();
                 if (mc.currentScreen instanceof GuiLabelium) {
                     mc.displayGuiScreen(null);
@@ -72,6 +71,7 @@ public class Labelium {
                     mc.displayGuiScreen(new GuiLabelium());
                 }
             }
+            wasPressed = pressed;
         }
     }
 
@@ -139,77 +139,66 @@ public class Labelium {
     public static class WaypointRenderer {
 
         @SubscribeEvent
-        public void onRenderWorldLast(RenderWorldLastEvent event) {
+        public void onRenderOverlay(RenderGameOverlayEvent.Post event) {
+            if (event.getType() != RenderGameOverlayEvent.ElementType.TEXT) return;
+
             Minecraft mc = Minecraft.getMinecraft();
             if (mc.player == null || mc.world == null) return;
 
+            int[] screen = new int[2];
             for (Label label : LabelData.getLabels()) {
                 if (!label.enabled) continue;
 
-                double dx = label.x + 0.5 - mc.player.posX;
-                double dy = label.y + 0.5 - mc.player.posY;
-                double dz = label.z + 0.5 - mc.player.posZ;
-                double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                if (dist > 256) continue;
-
-                drawLabel(mc, label.x + 0.5, label.y + 0.5, label.z + 0.5, label.name, event.getPartialTicks());
+                Vec3d pos = new Vec3d(label.x + 0.5, label.y + 0.5, label.z + 0.5);
+                if (worldToScreen(pos, event.getPartialTicks(), screen)) {
+                    drawDot(screen[0], screen[1], 4);
+                    mc.fontRenderer.drawStringWithShadow(label.name, screen[0] + 6, screen[1] - 4, 0xFF0000);
+                }
             }
         }
 
-        private void drawLabel(Minecraft mc, double x, double y, double z, String name, float partialTicks) {
+        private boolean worldToScreen(Vec3d worldPos, float partialTicks, int[] out) {
+            Minecraft mc = Minecraft.getMinecraft();
+            if (mc.getRenderViewEntity() == null) return false;
+
             Vec3d cam = mc.getRenderViewEntity().getPositionEyes(partialTicks);
-            double cx = x - cam.x;
-            double cy = y - cam.y;
-            double cz = z - cam.z;
+
+            double dx = worldPos.x - cam.x;
+            double dy = worldPos.y - cam.y;
+            double dz = worldPos.z - cam.z;
 
             double yaw = Math.toRadians(mc.getRenderViewEntity().rotationYaw);
             double pitch = Math.toRadians(mc.getRenderViewEntity().rotationPitch);
 
-            double sinYaw = Math.sin(yaw);
-            double cosYaw = Math.cos(yaw);
-            double sinPitch = Math.sin(pitch);
-            double cosPitch = Math.cos(pitch);
+            double x1 = dx * Math.cos(yaw) - dz * Math.sin(yaw);
+            double z1 = dx * Math.sin(yaw) + dz * Math.cos(yaw);
 
-            double x1 = cx * cosYaw - cz * sinYaw;
-            double z1 = cx * sinYaw + cz * cosYaw;
+            double y1 = dy * Math.cos(pitch) - z1 * Math.sin(pitch);
+            double z2 = dy * Math.sin(pitch) + z1 * Math.cos(pitch);
 
-            double y1 = cy * cosPitch - z1 * sinPitch;
-            double z2 = cy * sinPitch + z1 * cosPitch;
-
-            if (z2 <= 0.1) return;
+            if (z2 >= -0.1) return false;
 
             double fov = mc.gameSettings.fovSetting;
-            double scale = 1.0 / Math.tan(Math.toRadians(fov) / 2.0);
             double aspect = (double) mc.displayWidth / mc.displayHeight;
+            double tanHalfFov = Math.tan(Math.toRadians(fov) / 2.0);
 
-            double ndcX = (x1 * scale / aspect) / z2;
-            double ndcY = (y1 * scale) / z2;
-            if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) return;
+            double ndcX = x1 / (-z2 * tanHalfFov * aspect);
+            double ndcY = y1 / (-z2 * tanHalfFov);
 
-            int screenW = mc.displayWidth;
-            int screenH = mc.displayHeight;
-            int px = (int) ((ndcX + 1) / 2 * screenW);
-            int py = (int) ((1 - ndcY) / 2 * screenH);
+            if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) return false;
 
             ScaledResolution sr = new ScaledResolution(mc);
-            int sx = px * sr.getScaledWidth() / screenW;
-            int sy = py * sr.getScaledHeight() / screenH;
+            out[0] = (int) ((ndcX + 1) / 2 * sr.getScaledWidth());
+            out[1] = (int) ((1 - ndcY) / 2 * sr.getScaledHeight());
+            return true;
+        }
 
+        private void drawDot(int x, int y, int size) {
             GlStateManager.pushMatrix();
             GlStateManager.enableBlend();
             GlStateManager.blendFunc(GlStateManager.SourceFactor.SRC_ALPHA, GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA);
             GlStateManager.color(1f, 0f, 0f, 1f);
 
-            drawDot(sx, sy, 4);
-
-            GlStateManager.color(1f, 1f, 1f, 1f);
-            mc.fontRenderer.drawStringWithShadow(name, sx + 6, sy - 4, 0xFF0000);
-
-            GlStateManager.disableBlend();
-            GlStateManager.popMatrix();
-        }
-
-        private void drawDot(int x, int y, int size) {
             Tessellator tess = Tessellator.getInstance();
             BufferBuilder buf = tess.getBuffer();
             buf.begin(GL11.GL_QUADS, DefaultVertexFormats.POSITION);
@@ -218,13 +207,16 @@ public class Labelium {
             buf.pos(x + size, y - size, 0).endVertex();
             buf.pos(x - size, y - size, 0).endVertex();
             tess.draw();
+
+            GlStateManager.color(1f, 1f, 1f, 1f);
+            GlStateManager.disableBlend();
+            GlStateManager.popMatrix();
         }
     }
 
     @SideOnly(Side.CLIENT)
     public static class GuiLabelium extends GuiScreen {
 
-        private GuiButton addButton;
         private GuiTextField xField, yField, zField;
         private boolean choosingType = false;
 
@@ -233,8 +225,7 @@ public class Labelium {
             this.buttonList.clear();
             int cx = this.width / 2;
 
-            addButton = new GuiButton(0, cx - 50, 30, 100, 20, "+");
-            this.buttonList.add(addButton);
+            this.buttonList.add(new GuiButton(0, cx - 50, 30, 100, 20, "+"));
 
             if (choosingType) {
                 this.buttonList.add(new GuiButton(1, cx - 50, 55, 100, 20, "Here"));
