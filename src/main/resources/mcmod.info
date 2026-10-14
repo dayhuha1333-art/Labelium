@@ -1,8 +1,8 @@
 [
 {
-  "modid": "labelium",
-  "name": "Labelium",
-  "description": "Client-side coordinate labels with GUI.",
+  "modid": "showfps",
+  "name": "ShowFPS",
+  "description": "Show fps for you",
   "version": "${version}",
   "mcversion": "${mcversion}",
   "authorList": ["Zaryadka432"],
