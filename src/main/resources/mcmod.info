@@ -1,0 +1,11 @@
+[
+{
+  "modid": "labelium",
+  "name": "Labelium",
+  "description": "Client-side coordinate labels with GUI.",
+  "version": "${version}",
+  "mcversion": "${mcversion}",
+  "authorList": ["Zaryadka432"],
+  "dependencies": []
+}
+]
